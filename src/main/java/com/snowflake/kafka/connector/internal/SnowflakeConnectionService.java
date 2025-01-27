@@ -1,7 +1,12 @@
 package com.snowflake.kafka.connector.internal;
 
+import com.snowflake.kafka.connector.internal.streaming.ChannelMigrateOffsetTokenResponseDTO;
+import com.snowflake.kafka.connector.internal.streaming.schemaevolution.ColumnInfos;
+import com.snowflake.kafka.connector.internal.telemetry.SnowflakeTelemetryService;
 import java.sql.Connection;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 public interface SnowflakeConnectionService {
   /**
@@ -88,6 +93,48 @@ public interface SnowflakeConnectionService {
    * @return true if schema is correct, false is schema is incorrect or table does not exist
    */
   boolean isTableCompatible(String tableName);
+
+  /**
+   * Check whether the user has the role privilege to do schema evolution and whether the schema
+   * evolution option is enabled on the table
+   *
+   * @param tableName the name of the table
+   * @param role the role of the user
+   * @return whether table and role has the required permission to perform schema evolution
+   */
+  boolean hasSchemaEvolutionPermission(String tableName, String role);
+
+  /**
+   * Alter table to add columns according to a map from columnNames to their types
+   *
+   * @param tableName the name of the table
+   * @param columnInfosMap the mapping from the columnNames to their columnInfos
+   */
+  void appendColumnsToTable(String tableName, Map<String, ColumnInfos> columnInfosMap);
+
+  /**
+   * Alter iceberg table to modify columns datatype
+   *
+   * @param tableName the name of the table
+   * @param columnInfosMap the mapping from the columnNames to their columnInfos
+   */
+  void alterColumnsDataTypeIcebergTable(String tableName, Map<String, ColumnInfos> columnInfosMap);
+
+  /**
+   * Alter iceberg table to add columns according to a map from columnNames to their types
+   *
+   * @param tableName the name of the table
+   * @param columnInfosMap the mapping from the columnNames to their columnInfos
+   */
+  void appendColumnsToIcebergTable(String tableName, Map<String, ColumnInfos> columnInfosMap);
+
+  /**
+   * Alter table to drop non-nullability of a list of columns
+   *
+   * @param tableName the name of the table
+   * @param columnNames the list of columnNames
+   */
+  void alterNonNullableColumns(String tableName, List<String> columnNames);
 
   /**
    * Examine all file names matches our pattern
@@ -210,6 +257,7 @@ public interface SnowflakeConnectionService {
    * @param content file content
    */
   void putToTableStage(String tableName, String fileName, byte[] content);
+
   /** @return telemetry client */
   SnowflakeTelemetryService getTelemetryClient();
 
@@ -233,4 +281,72 @@ public interface SnowflakeConnectionService {
 
   /** @return the raw jdbc connection */
   Connection getConnection();
+
+  /**
+   * Append a VARIANT type column "RECORD_METADATA" to the table if it is not present.
+   *
+   * <p>This method is only called when schematization is enabled
+   *
+   * @param tableName table name
+   */
+  void appendMetaColIfNotExist(String tableName);
+
+  /**
+   * Create a table with only the RECORD_METADATA column. The rest of the columns might be added
+   * through schema evolution
+   *
+   * <p>In the beginning of the function we will check if we have the permission to do schema
+   * evolution, and we will error out if we don't
+   *
+   * @param tableName table name
+   */
+  void createTableWithOnlyMetadataColumn(String tableName);
+
+  /**
+   * Migrate Streaming Channel offsetToken from a source Channel to a destination channel.
+   *
+   * <p>Here, source channel is the new channel format we created here * @see <a
+   * href="https://github.com/snowflakedb/snowflake-kafka-connector/commit/3bf9106b22510c62068f7d2f7137b9e57989274c">Commit
+   * </a>
+   *
+   * <p>Destination channel is the original Format containing only topicName and partition number.
+   *
+   * <p>We catch SQLException and JsonProcessingException that might happen in this method. The
+   * caller should always open the Old Channel format. This old channel format will also be the key
+   * to many HashMaps we will create. (For instance {@link
+   * com.snowflake.kafka.connector.internal.streaming.SnowflakeSinkServiceV2#partitionsToChannel})
+   *
+   * @param tableName Name of the table
+   * @param sourceChannelName sourceChannel name from where the offset Token will be fetched.
+   *     Channel with this name will also be deleted.
+   * @param destinationChannelName destinationChannel name to where the offsetToken will be copied
+   *     over.
+   * @return The DTO serialized from the migration response.
+   */
+  ChannelMigrateOffsetTokenResponseDTO migrateStreamingChannelOffsetToken(
+      String tableName, String sourceChannelName, String destinationChannelName);
+
+  /**
+   * Alter the RECORD_METADATA column to be of the required structured OBJECT type for iceberg
+   * tables.
+   *
+   * @param tableName iceberg table name
+   */
+  void initializeMetadataColumnTypeForIceberg(String tableName);
+
+  /**
+   * Add the RECORD_METADATA column to the iceberg table if it does not exist.
+   *
+   * @param tableName iceberg table name
+   */
+  void addMetadataColumnForIcebergIfNotExists(String tableName);
+
+  /**
+   * Calls describe table statement and returns all columns and corresponding types.
+   *
+   * @param tableName - table name
+   * @return Optional.empty() if table does not exist. List of all table columns and their types
+   *     otherwise.
+   */
+  Optional<List<DescribeTableRow>> describeTable(String tableName);
 }

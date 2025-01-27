@@ -53,7 +53,7 @@ public class SinkTaskProxyIT {
    * required.
    *
    * <p>For instructions on how to setup proxy server take a look at
-   * .github/workflows/IntegrationTestAws.yml
+   * .github/workflows/IntegrationTest.yml
    */
   @Test
   public void testSinkTaskProxyConfig() {
@@ -98,7 +98,8 @@ public class SinkTaskProxyIT {
     SnowflakeIngestionService ingestionService = connectionService.buildIngestService(stage, pipe);
 
     String file = "{\"aa\":123}";
-    String fileName = FileNameUtils.fileName(TestUtils.TEST_CONNECTOR_NAME, table, 0, 0, 1);
+    String fileName =
+        FileNameTestUtils.fileName(TestUtils.TEST_CONNECTOR_NAME, table, null, 0, 0, 1);
 
     connectionService.putWithCache(stage, fileName, file);
     ingestionService.ingestFile(fileName);
