@@ -1,7 +1,9 @@
 from test_suit.test_utils import RetryableError, NonRetryableError, ResetAndRetry
 import json
+from time import sleep
+from test_suit.base_e2e import BaseE2eTest
 
-class TestPressureRestart:
+class TestPressureRestart(BaseE2eTest):
     def __init__(self, driver, nameSalt):
         self.driver = driver
         self.topics = []
@@ -16,13 +18,15 @@ class TestPressureRestart:
         for i in range(self.topicNum):
             self.topics.append(self.fileName + str(i) + nameSalt)
 
+        for t in range(self.topicNum):
+            self.driver.createTopics(self.topics[t], self.partitionNum, 1)
+
+        sleep(5)
+
     def getConfigFileName(self):
         return self.fileName + ".json"
 
     def send(self):
-        for t in range(self.topicNum):
-            self.driver.createTopics(self.topics[t], self.partitionNum, 1)
-
         for p in range(self.partitionNum):
             for t in range(self.topicNum):
                 value = []

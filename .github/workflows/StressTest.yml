@@ -1,43 +1,55 @@
 name: Kafka Connector Stress Test
 
 on:
-  schedule:
-    - cron:  '0 8 * * 6'
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: '**'
 
 jobs:
   build:
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstrategyfail-fast
+#      Matrix was reduced to single dimension because running stress tests multiple times heavily affects environment
+#      Feel free to temporarily add values here
+      matrix:
+        confluent_version: [ '7.6.0' ]
+        snowflake_cloud: [ 'AWS' ]
+        java_test_version: [ '11' ]
     steps:
     - name: Checkout Code
       uses: actions/checkout@v2
     - name: "Install Java 8"
-      uses: actions/setup-java@v1
+      uses: actions/setup-java@v3
       with:
-        java-version: 1.8
+        distribution: 'zulu'
+        java-version: 8
     - name: Install Python
-      uses: actions/setup-python@v1
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.6'
+        python-version: '3.9'
         architecture: 'x64'
-    - name: Decrypt profile.json
-      run: ./.github/scripts/decrypt_secret.sh 'aws'
+    - name: Decrypt profile.json in Snowflake Cloud ${{ matrix.snowflake_cloud }}
+      run: ./.github/scripts/decrypt_secret.sh ${{ matrix.snowflake_cloud }}
       env:
         SNOWFLAKE_TEST_PROFILE_SECRET: ${{ secrets.SNOWFLAKE_TEST_PROFILE_SECRET }}
     - name: Install Dependency
       run: |
         pip3 install --upgrade setuptools
-        pip3 install requests certifi "confluent-kafka[avro,json,protobuf]==1.7.0"
-        pip3 install avro-python3 kafka-python
-        pip3 install protobuf
-        pip3 install --upgrade snowflake-connector-python
+        sudo apt-get install librdkafka-dev
+        pip3 install requests certifi "confluent-kafka[avro,json,protobuf]==1.9.2"
+        pip3 install avro kafka-python
+        pip3 install --upgrade protobuf==3.20.3
+        pip3 install --upgrade snowflake-connector-python==2.7.4
         curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+        sudo apt-get update
         sudo apt-get -y install jq
         sudo apt-get -y install protobuf-compiler
 
     - name: Install Squid as Proxy Server and Apache Utils for Password Authentication
       run: |
-        sudo apt-get update
-        sudo apt-get -y install squid3
+        sudo apt-get -y install squid
         sudo apt-get install apache2-utils
 
     - name: Change squid config and run Proxy Server
@@ -48,22 +60,25 @@ jobs:
         sudo mv .github/scripts/squid.conf /etc/squid/squid.conf
         sudo service squid start
     
-    - name: Build with Unit and Integration Test
+    - name: Build with Unit Test
       env:
         JACOCO_COVERAGE: true
         SNOWFLAKE_CREDENTIAL_FILE: "../profile.json"
         SHELL: "/bin/bash"
       run: |
         cd test
-        ./build_apache.sh ../../snowflake-kafka-connector package
+        ./build_runtime_jar.sh ../../snowflake-kafka-connector package confluent
 
-    - name: End to End Test of Confluent Platform 5.5
+    - name: Setup JAVA for tests version ${{ matrix.java_test_version }}
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'zulu'
+        java-version: ${{ matrix.java_test_version }}
+
+    - name: Stress Tests of Confluent Platform Version ${{ matrix.confluent_version }} against Snowflake in ${{ matrix.snowflake_cloud }} with JAVA ${{ matrix.java_test_version }}
       env:
         SNOWFLAKE_CREDENTIAL_FILE: "../profile.json"
+      continue-on-error: true
       run: |
         cd test
-        ./run_test_confluent.sh 5.5.0 ./apache_properties true
-
-
-
-
+        ./run_test_confluent.sh ${{ matrix.confluent_version }} ./apache_properties true

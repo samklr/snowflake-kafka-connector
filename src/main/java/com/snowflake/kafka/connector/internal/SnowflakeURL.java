@@ -22,7 +22,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Snowflake URL Object https://account.region.snowflakecomputing.com:443 */
-public class SnowflakeURL extends Logging {
+public class SnowflakeURL implements URL {
+
+  private final KCLogger LOGGER = new KCLogger(SnowflakeURL.class.getName());
 
   private String jdbcUrl;
 
@@ -78,11 +80,11 @@ public class SnowflakeURL extends Logging {
 
     jdbcUrl = "jdbc:snowflake://" + url + ":" + port;
     if (enableJDBCTrace()) {
-      logInfo("enabling JDBC tracing");
+      LOGGER.info("enabling JDBC tracing");
       jdbcUrl = jdbcUrl + "/?tracing=ALL";
     }
 
-    logDebug("parsed Snowflake URL: {}", urlStr);
+    LOGGER.debug("parsed Snowflake URL: {}", urlStr);
   }
 
   /**
@@ -103,11 +105,12 @@ public class SnowflakeURL extends Logging {
     return account;
   }
 
-  boolean sslEnabled() {
+  @Override
+  public boolean sslEnabled() {
     return ssl;
   }
 
-  String getScheme() {
+  public String getScheme() {
     if (ssl) {
       return "https";
     } else {
@@ -130,5 +133,15 @@ public class SnowflakeURL extends Logging {
   @Override
   public String toString() {
     return getFullUrl();
+  }
+
+  @Override
+  public String hostWithPort() {
+    return getFullUrl();
+  }
+
+  @Override
+  public String path() {
+    return OAuthConstants.TOKEN_REQUEST_ENDPOINT;
   }
 }

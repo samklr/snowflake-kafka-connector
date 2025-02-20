@@ -16,8 +16,8 @@ function random-string() {
 source ./utils.sh
 
 # check argument number
-if [ "$#" -lt 2 ] || [ "$#" -gt 4 ] ; then
-    error_exit "Usage: ./run_test.sh <version> <path to apache config folder> <pressure> <ssl>.  Aborting."
+if [ "$#" -lt 2 ] || [ "$#" -gt 6 ] ; then
+    error_exit "Usage: ./run_test.sh <version> <path to apache config folder> <pressure> <ssl> [--skipProxy] [--tests=TestStringJson,TestStringAvro,...].  Aborting."
 fi
 
 CONFLUENT_VERSION=$1
@@ -31,7 +31,22 @@ if [ "$#" -gt 3 ] ; then
   SSL=$4
 else
   SSL="false"
-fi 
+fi
+
+if [ "$#" -gt 4 ] && [[ $5 == "--skipProxy" ]] ; then
+  SKIP_PROXY=true
+else
+  SKIP_PROXY=false
+fi
+
+tests_pattern="[^(--tests=).*]"
+if [ "$#" -gt 5 ] && [[ $6 =~ $tests_pattern ]] ; then
+  # skip initial '--tests='
+  TESTS=`echo $6 | cut -c9-`
+else
+  TESTS=""
+fi
+
 SNOWFLAKE_ZOOKEEPER_CONFIG="zookeeper.properties"
 SNOWFLAKE_KAFKA_CONFIG="server.properties"
 SNOWFLAKE_KAFKA_CONNECT_CONFIG="connect-distributed.properties"
@@ -79,23 +94,14 @@ echo -e "=== Name Salt: $NAME_SALT ==="
 
 # start apache kafka cluster
 case $CONFLUENT_VERSION in
-	5.0.0)
-    DOWNLOAD_URL="https://packages.confluent.io/archive/5.0/confluent-oss-5.0.0-2.11.tar.gz"
-		;;
-	5.1.0)
-    DOWNLOAD_URL="https://packages.confluent.io/archive/5.1/confluent-community-5.1.0-2.11.tar.gz"
+	5.5.*)
+    DOWNLOAD_URL="https://packages.confluent.io/archive/5.5/confluent-community-$CONFLUENT_VERSION-2.12.tar.gz"
     ;;
-	5.*.0)
-    c_version=${CONFLUENT_VERSION%.0}
-    DOWNLOAD_URL="https://packages.confluent.io/archive/$c_version/confluent-community-$c_version.0-2.12.tar.gz"
+	6.2.*)
+    DOWNLOAD_URL="https://packages.confluent.io/archive/6.2/confluent-community-$CONFLUENT_VERSION.tar.gz"
     ;;
-	5.*.2)
-    c_version=${CONFLUENT_VERSION%.2}
-    DOWNLOAD_URL="https://packages.confluent.io/archive/$c_version/confluent-community-$c_version.2-2.12.tar.gz"
-    ;;
-	6.*.0)
-    c_version=${CONFLUENT_VERSION%.0}
-    DOWNLOAD_URL="https://packages.confluent.io/archive/$c_version/confluent-$CONFLUENT_VERSION.tar.gz"
+  7.6.*)
+    DOWNLOAD_URL="https://packages.confluent.io/archive/7.6/confluent-community-$CONFLUENT_VERSION.tar.gz"
     ;;
   *)
     error_exit "Usage: ./run_test.sh <version> <path to apache config folder>. Unknown version $CONFLUENT_VERSION Aborting."
@@ -106,6 +112,7 @@ CONFLUENT_FOLDER_NAME="./confluent-$CONFLUENT_VERSION"
 rm -rf $CONFLUENT_FOLDER_NAME || true
 rm apache.tgz || true
 
+echo "Downloading CONFLUENT VERSION using URL: $DOWNLOAD_URL"
 curl $DOWNLOAD_URL --output apache.tgz
 tar xzvf apache.tgz > /dev/null 2>&1
 
@@ -114,26 +121,15 @@ rm $APACHE_LOG_PATH/zookeeper.log $APACHE_LOG_PATH/kafka.log || true
 rm $APACHE_LOG_PATH/kc.log || true
 rm -rf /tmp/kafka-logs /tmp/zookeeper || true
 
-# Fips Jar installation, required for encrypted private key
-fipsInstallDirectory=$CONFLUENT_FOLDER_NAME/"share/java/kafka"
 KAFKA_CONNECT_PLUGIN_PATH="/usr/local/share/kafka/plugins"
-echo $fipsInstallDirectory
-lsCommand=$(ls $fipsInstallDirectory | grep fips | wc -l)
-echo $lsCommand
 
-if [ $lsCommand == 0 ]; then
-    echo "Installing fips Jars in:"$fipsInstallDirectory
-    wget -P $fipsInstallDirectory https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-fips/1.0.3/bcpkix-fips-1.0.3.jar
-    wget -P $fipsInstallDirectory https://repo1.maven.org/maven2/org/bouncycastle/bc-fips/1.0.2/bc-fips-1.0.2.jar
-    cp $fipsInstallDirectory/bcpkix-fips-1.0.3.jar $KAFKA_CONNECT_PLUGIN_PATH
-    cp $fipsInstallDirectory/bc-fips-1.0.2.jar $KAFKA_CONNECT_PLUGIN_PATH
-    echo "list KAFKA_CONNECT_PLUGIN_PATH: $KAFKA_CONNECT_PLUGIN_PATH"
-    ls $KAFKA_CONNECT_PLUGIN_PATH
-    echo "list confluent test share directory: $fipsInstallDirectory"
-    ls $fipsInstallDirectory
-else
-    echo "No need to download Fips Libraries"
-fi
+# this is the built jar
+echo "Built zip file using kafka connect maven plugin:"
+ls /tmp/sf-kafka-connect-plugin*
+# Plugin path is used by kafka connect to install plugin, in our case, SF Kafka Connector
+unzip /tmp/sf-kafka-connect-plugin.zip -d $KAFKA_CONNECT_PLUGIN_PATH
+echo "list KAFKA_CONNECT_PLUGIN_PATH: $KAFKA_CONNECT_PLUGIN_PATH"
+ls $KAFKA_CONNECT_PLUGIN_PATH
 
 # Copy the sample connect log4j properties file to appropriate directory
 echo "Copying connect-log4j.properties file to confluent folder"
@@ -158,6 +154,8 @@ sleep 10
 echo -e "\n=== Start Kafka ==="
 $CONFLUENT_FOLDER_NAME/bin/kafka-server-start $SNOWFLAKE_APACHE_CONFIG_PATH/$SNOWFLAKE_KAFKA_CONFIG > $APACHE_LOG_PATH/kafka.log 2>&1 &
 sleep 10
+echo -e "\n=== Java version used ==="
+java -version
 echo -e "\n=== Start Kafka Connect ==="
 KAFKA_HEAP_OPTS="-Xms512m -Xmx6g" $CONFLUENT_FOLDER_NAME/bin/connect-distributed $SNOWFLAKE_APACHE_CONFIG_PATH/$SNOWFLAKE_KAFKA_CONNECT_CONFIG > $APACHE_LOG_PATH/kc.log 2>&1 &
 sleep 10
@@ -170,17 +168,17 @@ LOCAL_IP="localhost"
 SC_PORT=8081
 KC_PORT=8083
 
-set +e
+set +e -x
 echo -e "\n=== Clean table stage and pipe ==="
-python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT clean $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL
+python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT clean $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL $SKIP_PROXY $TESTS
 
 # record_thread_count 2>&1 &
 # Send test data and verify DB result from Python
-python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT $TEST_SET $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL
+python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT $TEST_SET $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL $SKIP_PROXY $TESTS
 testError=$?
 
 # delete_connectors_with_salt $NAME_SALT $LOCAL_IP $KC_PORT
-python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT clean $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL
+python3 test_verify.py $SNOWFLAKE_KAFKA_ADDRESS http://$LOCAL_IP:$SC_PORT $LOCAL_IP:$KC_PORT clean $CONFLUENT_VERSION $NAME_SALT $PRESSURE $SSL $SKIP_PROXY $TESTS
 
 
 ##### Following commented code is used to track thread leak
@@ -206,6 +204,5 @@ if [ $testError -ne 0 ]; then
     RED='\033[0;31m'
     NC='\033[0m' # No Color
     echo -e "${RED} There is error above this line ${NC}"
-    cat $APACHE_LOG_PATH/kc.log
     error_exit "=== test_verify.py failed ==="
 fi

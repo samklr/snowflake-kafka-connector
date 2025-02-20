@@ -16,17 +16,24 @@
  */
 package com.snowflake.kafka.connector;
 
-import com.snowflake.kafka.connector.internal.*;
+import com.snowflake.kafka.connector.config.ConnectorConfigDefinition;
+import com.snowflake.kafka.connector.config.IcebergConfigValidator;
+import com.snowflake.kafka.connector.internal.KCLogger;
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionService;
+import com.snowflake.kafka.connector.internal.SnowflakeConnectionServiceFactory;
+import com.snowflake.kafka.connector.internal.SnowflakeErrors;
+import com.snowflake.kafka.connector.internal.SnowflakeKafkaConnectorException;
+import com.snowflake.kafka.connector.internal.streaming.DefaultStreamingConfigValidator;
+import com.snowflake.kafka.connector.internal.telemetry.SnowflakeTelemetryService;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.apache.kafka.common.config.Config;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.sink.SinkConnector;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * SnowflakeSinkConnector implements SinkConnector for Kafka Connect framework.
@@ -38,9 +45,11 @@ import org.slf4j.LoggerFactory;
  * running on Kafka Connect Workers.
  */
 public class SnowflakeSinkConnector extends SinkConnector {
+  // create logger without correlationId for now
+  private static KCLogger LOGGER = new KCLogger(SnowflakeSinkConnector.class.getName());
+
   private Map<String, String> config; // connector configuration, provided by
   // user through kafka connect framework
-  private String connectorName; // unique name of this connector instance
 
   // SnowflakeJDBCWrapper provides methods to interact with user's snowflake
   // account and executes queries
@@ -50,14 +59,16 @@ public class SnowflakeSinkConnector extends SinkConnector {
   private SnowflakeTelemetryService telemetryClient;
   private long connectorStartTime;
 
-  private static final Logger LOGGER = LoggerFactory.getLogger(SnowflakeSinkConnector.class);
-
   // Kafka Connect starts sink tasks without waiting for setup in
   // SnowflakeSinkConnector to finish.
   // This causes race conditions for: config validation, tables and stages
   // creation, etc.
   // Using setupComplete to synchronize
   private boolean setupComplete;
+
+  private final ConnectorConfigValidator connectorConfigValidator =
+      new DefaultConnectorConfigValidator(
+          new DefaultStreamingConfigValidator(), new IcebergConfigValidator());
 
   /** No-Arg constructor. Required by Kafka Connect framework */
   public SnowflakeSinkConnector() {
@@ -74,19 +85,27 @@ public class SnowflakeSinkConnector extends SinkConnector {
    */
   @Override
   public void start(final Map<String, String> parsedConfig) {
+    LOGGER.info("SnowflakeSinkConnector:starting...");
+
     Utils.checkConnectorVersion();
-    LOGGER.info(Logging.logMessage("SnowflakeSinkConnector:start"));
+
     setupComplete = false;
     connectorStartTime = System.currentTimeMillis();
-
     config = new HashMap<>(parsedConfig);
 
     SnowflakeSinkConnectorConfig.setDefaultValues(config);
 
-    Utils.validateConfig(config);
-
     // modify invalid connector name
     Utils.convertAppName(config);
+
+    connectorConfigValidator.validateConfig(config);
+
+    // enable mdc logging if needed
+    KCLogger.toggleGlobalMdcLoggingContext(
+        Boolean.parseBoolean(
+            config.getOrDefault(
+                SnowflakeSinkConnectorConfig.ENABLE_MDC_LOGGING_CONFIG,
+                SnowflakeSinkConnectorConfig.ENABLE_MDC_LOGGING_DEFAULT)));
 
     // enable proxy
     Utils.enableJVMProxy(config);
@@ -97,14 +116,11 @@ public class SnowflakeSinkConnector extends SinkConnector {
 
     telemetryClient = conn.getTelemetryClient();
 
-    // maxTasks value isn't visible if the user leaves it at default. So 0
-    // means unknown.
-    int maxTasks =
-        (config.containsKey("tasks.max")) ? Integer.parseInt(config.get("tasks.max")) : 0;
-
-    telemetryClient.reportKafkaStart(connectorStartTime, maxTasks);
+    telemetryClient.reportKafkaConnectStart(connectorStartTime, this.config);
 
     setupComplete = true;
+
+    LOGGER.info("SnowflakeSinkConnector:started");
   }
 
   /**
@@ -118,8 +134,8 @@ public class SnowflakeSinkConnector extends SinkConnector {
   @Override
   public void stop() {
     setupComplete = false;
-    LOGGER.info(Logging.logMessage("SnowflakeSinkConnector:stop"));
-    telemetryClient.reportKafkaStop(connectorStartTime);
+    LOGGER.info("SnowflakeSinkConnector:stopped");
+    telemetryClient.reportKafkaConnectStop(connectorStartTime);
   }
 
   // TODO (post GA): override reconfigure(java.util.Map<java.lang.String,java
@@ -156,10 +172,10 @@ public class SnowflakeSinkConnector extends SinkConnector {
       } else {
         counter++;
         try {
-          LOGGER.info(Logging.logMessage("Sleeping 5000ms to allow setup to " + "complete."));
+          LOGGER.info("Sleeping 5000ms to allow setup to " + "complete.");
           Thread.sleep(5000);
         } catch (InterruptedException ex) {
-          LOGGER.warn(Logging.logMessage("Waiting for setup to complete got " + "interrupted"));
+          LOGGER.warn("Waiting for setup to complete got " + "interrupted");
         }
       }
     }
@@ -179,7 +195,7 @@ public class SnowflakeSinkConnector extends SinkConnector {
   /** @return ConfigDef with original configuration properties */
   @Override
   public ConfigDef config() {
-    return SnowflakeSinkConnectorConfig.newConfigDef();
+    return ConnectorConfigDefinition.getConfig();
   }
 
   @Override
@@ -195,35 +211,17 @@ public class SnowflakeSinkConnector extends SinkConnector {
     }
 
     // Verify proxy config is valid
-    try {
-      Utils.validateProxySetting(connectorConfigs);
-    } catch (SnowflakeKafkaConnectorException e) {
-      LOGGER.error("Error validating proxy parameters:{}", e.getMessage());
-      switch (e.getCode()) {
-        case "0022":
-          Utils.updateConfigErrorMessage(
-              result,
-              SnowflakeSinkConnectorConfig.JVM_PROXY_HOST,
-              ": proxy host and port must be provided together");
-          Utils.updateConfigErrorMessage(
-              result,
-              SnowflakeSinkConnectorConfig.JVM_PROXY_PORT,
-              ": proxy host and port must be provided together");
-        case "0023":
-          Utils.updateConfigErrorMessage(
-              result,
-              SnowflakeSinkConnectorConfig.JVM_PROXY_USERNAME,
-              ": proxy username and password must be provided together");
-          Utils.updateConfigErrorMessage(
-              result,
-              SnowflakeSinkConnectorConfig.JVM_PROXY_PASSWORD,
-              ": proxy username and password must be provided together");
-      }
+    Map<String, String> invalidProxyParams = Utils.validateProxySettings(connectorConfigs);
+
+    for (String invalidKey : invalidProxyParams.keySet()) {
+      Utils.updateConfigErrorMessage(result, invalidKey, invalidProxyParams.get(invalidKey));
     }
-    // If private key or private key passphrase is provided through file, skip validation
-    if (connectorConfigs.getOrDefault(Utils.SF_PRIVATE_KEY, "").contains("${file:")
-        || connectorConfigs.getOrDefault(Utils.PRIVATE_KEY_PASSPHRASE, "").contains("${file:"))
+
+    // If using snowflake_jwt and authentication, and private key or private key passphrase is
+    // provided through a config provider, skip validation
+    if (isUsingJWT(connectorConfigs) && isUsingConfigProvider(connectorConfigs)) {
       return result;
+    }
 
     // We don't validate name, since it is not included in the return value
     // so just put a test connector here
@@ -254,6 +252,28 @@ public class SnowflakeSinkConnector extends SinkConnector {
           break;
         case "0013":
           Utils.updateConfigErrorMessage(result, Utils.SF_PRIVATE_KEY, " must be non-empty");
+          break;
+        case "0026":
+          Utils.updateConfigErrorMessage(
+              result,
+              Utils.SF_OAUTH_CLIENT_ID,
+              " must be non-empty when using oauth authenticator");
+          break;
+        case "0027":
+          Utils.updateConfigErrorMessage(
+              result,
+              Utils.SF_OAUTH_CLIENT_SECRET,
+              " must be non-empty when using oauth authenticator");
+          break;
+        case "0028":
+          Utils.updateConfigErrorMessage(
+              result,
+              Utils.SF_OAUTH_REFRESH_TOKEN,
+              " must be non-empty when using oauth authenticator");
+          break;
+        case "0029":
+          Utils.updateConfigErrorMessage(
+              result, Utils.SF_AUTHENTICATOR, " is not a valid authenticator");
           break;
         case "0002":
           Utils.updateConfigErrorMessage(
@@ -291,6 +311,23 @@ public class SnowflakeSinkConnector extends SinkConnector {
 
     LOGGER.info("Validated config with no error");
     return result;
+  }
+
+  private static boolean isUsingConfigProvider(Map<String, String> connectorConfigs) {
+    Pattern configProviderPrefix = Pattern.compile("[$][{][a-zA-Z]+:");
+
+    return configProviderPrefix
+            .matcher(connectorConfigs.getOrDefault(Utils.SF_PRIVATE_KEY, ""))
+            .find()
+        || configProviderPrefix
+            .matcher(connectorConfigs.getOrDefault(Utils.PRIVATE_KEY_PASSPHRASE, ""))
+            .find();
+  }
+
+  private static boolean isUsingJWT(Map<String, String> connectorConfigs) {
+    return connectorConfigs
+        .getOrDefault(Utils.SF_AUTHENTICATOR, Utils.SNOWFLAKE_JWT)
+        .equals(Utils.SNOWFLAKE_JWT);
   }
 
   /** @return connector version */

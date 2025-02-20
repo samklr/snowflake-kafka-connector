@@ -1,6 +1,7 @@
 package com.snowflake.kafka.connector.internal;
 
 import com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig;
+import com.snowflake.kafka.connector.Utils;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -10,7 +11,11 @@ import java.util.Properties;
 import net.snowflake.client.core.OCSPMode;
 import net.snowflake.client.core.SFSessionProperty;
 import net.snowflake.client.core.SFStatement;
-import net.snowflake.client.jdbc.*;
+import net.snowflake.client.jdbc.SnowflakeConnectionV1;
+import net.snowflake.client.jdbc.SnowflakeFileTransferAgent;
+import net.snowflake.client.jdbc.SnowflakeFileTransferConfig;
+import net.snowflake.client.jdbc.SnowflakeFileTransferMetadataV1;
+import net.snowflake.client.jdbc.SnowflakeSQLException;
 import net.snowflake.client.jdbc.cloud.storage.StageInfo;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -71,7 +76,8 @@ public class InternalStageIT {
     agent.putWithCache(stageName1, "testCacheFileName2", "Any cache", stageType);
     List<String> files1 = service.listStage(stageName1, "testCache");
     assert files1.size() == 2;
-    System.out.println(Logging.logMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
+    System.out.println(
+        Utils.formatLogMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
 
     // PUT 50 files to stageName2
     startTime = System.currentTimeMillis();
@@ -81,7 +87,8 @@ public class InternalStageIT {
     }
     List<String> files2 = service.listStage(stageName2, "appName/tableName/partition/testCache");
     assert files2.size() == fileNumber;
-    System.out.println(Logging.logMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
+    System.out.println(
+        Utils.formatLogMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
   }
 
   @Test
@@ -95,7 +102,7 @@ public class InternalStageIT {
           stageNameGCSPut, "appName/tableName/partition/testNoCacheFileName" + i, "Any data");
     }
     System.out.println(
-        Logging.logMessage(
+        Utils.formatLogMessage(
             "Time for putting {} files in GCS is:{} ms",
             numberOfFiles,
             (System.currentTimeMillis() - startTime)));
@@ -113,7 +120,7 @@ public class InternalStageIT {
           "Any data");
     }
     System.out.println(
-        Logging.logMessage(
+        Utils.formatLogMessage(
             "Time for putting {} files in GCS(UploadWithoutConnection) is:{} ms",
             numberOfFiles,
             (System.currentTimeMillis() - startTime)));
@@ -163,7 +170,8 @@ public class InternalStageIT {
 
     List<String> files1 = proxyConnectionService.listStage(proxyStage, "testInternalStage");
     assert files1.size() == 2;
-    System.out.println(Logging.logMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
+    System.out.println(
+        Utils.formatLogMessage("Time: {} ms", (System.currentTimeMillis() - startTime)));
     proxyConnectionService.dropStage(proxyStage);
   }
 

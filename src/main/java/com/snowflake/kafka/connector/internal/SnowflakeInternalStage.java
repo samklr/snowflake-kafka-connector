@@ -27,7 +27,7 @@ import net.snowflake.client.jdbc.internal.apache.commons.io.FilenameUtils;
  * <p>For GCS, we dont have any cache, we will make a call to GS for every put API since we require
  * presignedURL
  */
-public class SnowflakeInternalStage extends Logging {
+public class SnowflakeInternalStage {
 
   private static class SnowflakeMetadataWithExpiration {
 
@@ -51,6 +51,8 @@ public class SnowflakeInternalStage extends Logging {
       return this.stageType;
     }
   }
+
+  private final KCLogger LOGGER = new KCLogger(SnowflakeInternalStage.class.getName());
 
   // Any operation on the map should be atomic
   private final ConcurrentMap<String, SnowflakeMetadataWithExpiration> storageInfoCache =
@@ -129,9 +131,6 @@ public class SnowflakeInternalStage extends Logging {
    *
    * <p>If we pass in expired credentials, we will get expired credentials error from cloud.
    *
-   * <p>JDBC itself should renew the token but looks like that part of the code is not working.
-   * https://github.com/snowflakedb/snowflake-jdbc/blob/master/src/main/java/net/snowflake/client/jdbc/cloud/storage/SnowflakeS3Client.java#L738
-   *
    * <p>We are already doing a retry for this failure and renew the credentials from our end by
    * calling tradition put API with connection.
    *
@@ -147,14 +146,14 @@ public class SnowflakeInternalStage extends Logging {
 
       if (!isCredentialValid(credential, stageType)) {
         // This should always be executed in GCS
-        logDebug(
+        LOGGER.debug(
             "Query credential(Refreshing Credentials) for stageName:{}, filePath:{}",
             stageName,
             fullFilePath);
         refreshCredentials(stageName, stageType, fullFilePath);
       }
     } catch (Exception e) {
-      logWarn(
+      LOGGER.warn(
           "Failed to refresh Credentials for stageName:{}, filePath:{}", stageName, fullFilePath);
       throw SnowflakeErrors.ERROR_5018.getException(e.getMessage());
     }
@@ -179,10 +178,14 @@ public class SnowflakeInternalStage extends Logging {
               .setSnowflakeFileTransferMetadata(fileTransferMetadata)
               .setUploadStream(inStream)
               .setRequireCompress(true)
+              // Setting a destinationFileName is a no-op for AWS and Azure since it still uses
+              // presignedUrlFileName
+              // Setting destFileName is useful for GCS and downscope URL
+              .setDestFileName(FilenameUtils.getName(fullFilePath))
               .setOcspMode(OCSPMode.FAIL_OPEN)
               .setProxyProperties(proxyProperties)
               .build());
-      logInfo(
+      LOGGER.info(
           "uploadWithoutConnection successful for stageName:{}, filePath:{}",
           stageName,
           fullFilePath,
@@ -190,7 +193,7 @@ public class SnowflakeInternalStage extends Logging {
     } catch (Exception e) {
       // If this api encounters error, invalidate the cached credentials
       // Caller will retry this function
-      logWarn(
+      LOGGER.warn(
           "uploadWithoutConnection encountered an exception:{} for filePath:{} in Storage:{}",
           e.getMessage(),
           fullFilePath,
@@ -236,7 +239,7 @@ public class SnowflakeInternalStage extends Logging {
     SnowflakeFileTransferMetadataV1 fileTransferMetadata =
         (SnowflakeFileTransferMetadataV1) agent.getFileTransferMetadatas().get(0);
     if (fileTransferMetadata.getStageInfo().getStageType() == StageInfo.StageType.LOCAL_FS) {
-      logError(
+      LOGGER.error(
           "StageName:{} is not a valid stageType:{}",
           stageName,
           fileTransferMetadata.getStageInfo().getStageType());
@@ -248,7 +251,7 @@ public class SnowflakeInternalStage extends Logging {
       // Caching it here since we require to fetch the credential(Metadata) in the caller function
       // again.
       storageInfoCache.put(stageName, credential);
-      logDebug("Caching credential successful for stage:{}", stageName);
+      LOGGER.debug("Caching credential successful for stage:{}", stageName);
     }
   }
 

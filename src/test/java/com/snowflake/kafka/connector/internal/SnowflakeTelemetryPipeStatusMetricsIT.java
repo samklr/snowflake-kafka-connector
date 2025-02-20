@@ -4,13 +4,14 @@ import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.snowflake.kafka.connector.Utils;
 import com.snowflake.kafka.connector.internal.metrics.MetricsUtil;
 import com.snowflake.kafka.connector.records.SnowflakeConverter;
 import com.snowflake.kafka.connector.records.SnowflakeJsonConverter;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaAndValue;
 import org.apache.kafka.connect.sink.SinkRecord;
@@ -43,7 +44,7 @@ public class SnowflakeTelemetryPipeStatusMetricsIT {
     // This means that default is true.
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
-            .addTask(tableName, topic, partition)
+            .addTask(tableName, new TopicPartition(topic, partition))
             .setRecordNumber(1)
             .build();
 
@@ -93,7 +94,7 @@ public class SnowflakeTelemetryPipeStatusMetricsIT {
             conn.listStage(
                         stageName,
                         FileNameUtils.filePrefix(
-                            TestUtils.TEST_CONNECTOR_NAME, tableName, partition))
+                            TestUtils.TEST_CONNECTOR_NAME, tableName, null, partition))
                     .size()
                 == 0,
         30,
@@ -182,7 +183,7 @@ public class SnowflakeTelemetryPipeStatusMetricsIT {
     SnowflakeSinkService service =
         SnowflakeSinkServiceFactory.builder(conn)
             .setCustomJMXMetrics(false)
-            .addTask(tableName, topic, partition)
+            .addTask(tableName, new TopicPartition(topic, partition))
             .setRecordNumber(1)
             .build();
 

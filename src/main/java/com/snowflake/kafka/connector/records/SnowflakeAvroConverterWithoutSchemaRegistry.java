@@ -16,11 +16,10 @@
  */
 package com.snowflake.kafka.connector.records;
 
-import com.snowflake.kafka.connector.internal.Logging;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.snowflake.kafka.connector.internal.SnowflakeErrors;
 import java.io.IOException;
 import java.util.ArrayList;
-import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.JsonNode;
 import org.apache.avro.file.DataFileReader;
 import org.apache.avro.file.SeekableByteArrayInput;
 import org.apache.avro.generic.GenericDatumReader;
@@ -83,7 +82,7 @@ public class SnowflakeAvroConverterWithoutSchemaRegistry extends SnowflakeConver
 
       return new SchemaAndValue(new SnowflakeJsonSchema(), new SnowflakeRecordContent(result));
     } catch (Exception e) {
-      LOGGER.error(Logging.logMessage("Failed to parse AVRO record\n" + e.getMessage()));
+      LOGGER.error("Failed to parse AVRO record\n" + e.getMessage());
       return new SchemaAndValue(new SnowflakeJsonSchema(), new SnowflakeRecordContent(value));
     }
   }

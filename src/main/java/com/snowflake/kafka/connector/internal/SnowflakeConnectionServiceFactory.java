@@ -2,8 +2,10 @@ package com.snowflake.kafka.connector.internal;
 
 import static com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig.PROVIDER_CONFIG;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.snowflake.kafka.connector.SnowflakeSinkConnectorConfig;
 import com.snowflake.kafka.connector.Utils;
+import com.snowflake.kafka.connector.internal.streaming.IngestionMethodConfig;
 import java.util.Map;
 import java.util.Properties;
 
@@ -12,9 +14,9 @@ public class SnowflakeConnectionServiceFactory {
     return new SnowflakeConnectionServiceBuilder();
   }
 
-  public static class SnowflakeConnectionServiceBuilder extends Logging {
-    private Properties prop;
-    private Properties proxyProperties;
+  public static class SnowflakeConnectionServiceBuilder {
+
+    private JdbcProperties jdbcProperties;
     private SnowflakeURL url;
     private String connectorName;
     private String taskID = "-1";
@@ -24,15 +26,19 @@ public class SnowflakeConnectionServiceFactory {
     // This property will be appeneded to user agent while calling snowpipe API in http request
     private String kafkaProvider = null;
 
-    // For testing only
-    public SnowflakeConnectionServiceBuilder setProperties(Properties prop) {
-      this.prop = prop;
+    /** Underlying implementation - Check Enum {@link IngestionMethodConfig} */
+    private IngestionMethodConfig ingestionMethodConfig;
+
+    @VisibleForTesting
+    public SnowflakeConnectionServiceBuilder setProperties(Properties connectionProperties) {
+      this.jdbcProperties = JdbcProperties.create(connectionProperties);
+      this.ingestionMethodConfig = IngestionMethodConfig.SNOWPIPE;
       return this;
     }
 
     // For testing only
     public Properties getProperties() {
-      return this.prop;
+      return this.jdbcProperties.getProperties();
     }
 
     public SnowflakeConnectionServiceBuilder setURL(SnowflakeURL url) {
@@ -55,25 +61,26 @@ public class SnowflakeConnectionServiceFactory {
         throw SnowflakeErrors.ERROR_0017.getException();
       }
       this.url = new SnowflakeURL(conf.get(Utils.SF_URL));
-      this.prop = InternalUtils.createProperties(conf, this.url.sslEnabled());
       this.kafkaProvider =
           SnowflakeSinkConnectorConfig.KafkaProvider.of(conf.get(PROVIDER_CONFIG)).name();
-      // TODO: Ideally only one property is required, but because we dont pass it around in JDBC and
-      // snowpipe SDK,
-      //  it is better if we have two properties decoupled
-      // Right now, proxy parameters are picked from jvm system properties, in future they need to
-      // be decoupled
-      this.proxyProperties = InternalUtils.generateProxyParametersIfRequired(conf);
       this.connectorName = conf.get(Utils.NAME);
+      this.ingestionMethodConfig = IngestionMethodConfig.determineIngestionMethod(conf);
+
+      Properties proxyProperties = InternalUtils.generateProxyParametersIfRequired(conf);
+      Properties connectionProperties =
+          InternalUtils.createProperties(conf, this.url, ingestionMethodConfig);
+      Properties jdbcPropertiesMap = InternalUtils.parseJdbcPropertiesMap(conf);
+      this.jdbcProperties =
+          JdbcProperties.create(connectionProperties, proxyProperties, jdbcPropertiesMap);
       return this;
     }
 
     public SnowflakeConnectionService build() {
-      InternalUtils.assertNotEmpty("properties", prop);
+      InternalUtils.assertNotEmpty("jdbcProperties", jdbcProperties);
       InternalUtils.assertNotEmpty("url", url);
       InternalUtils.assertNotEmpty("connectorName", connectorName);
       return new SnowflakeConnectionServiceV1(
-          prop, url, connectorName, taskID, proxyProperties, kafkaProvider);
+          jdbcProperties, url, connectorName, taskID, kafkaProvider, ingestionMethodConfig);
     }
   }
 }
